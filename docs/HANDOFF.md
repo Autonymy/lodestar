@@ -73,12 +73,16 @@ Source: `docs/product-surface-design.md` (STATUS: DESIGN — not built; delibera
    quotas/observability on the life-verb edge; control-plane hooks. After Phase 2.
 
 ### B. Cross-host security — mTLS gateway ↔ coordinator
-5. **mTLS between gateway and coordinator for untrusted links** — PLANNED, not built.
-   Today the over-the-wire coordinator protocol is **UNAUTHENTICATED**, so any non-loopback
-   link (`FRAM_BIND=0.0.0.0`) must be a **trusted private network** until mTLS lands.
-   **Fram-COUPLED:** the coordinator endpoint must terminate/verify TLS — engine territory.
-   Unblocked by a Fram change to the coordinator wire/bind. This is the gate on safely
-   exposing `FRAM_BIND=0.0.0.0` over any untrusted link.
+5. **mTLS between gateway and coordinator for untrusted links** — ✅ **Fram ASSESSED
+   (2026-06-17); now downstream-only, NOT Fram-coupled.** The coordinator protocol is
+   UNAUTHENTICATED, so a non-loopback link still needs a TLS boundary — but Fram found
+   that babashka's native image cannot terminate TLS server-side (no `SSLServerSocket`),
+   so engine-terminated mTLS is **specced-and-deferred** (would require running only the
+   daemon under JVM Clojure). The **supported transport is an stunnel mTLS sidecar** —
+   `fram/deploy/stunnel.example.conf` — coordinator stays loopback, stunnel provides
+   mutual TLS, the wire protocol is byte-identical, **zero Fram code**. So Lodestar's
+   remaining work is just to wire stunnel into its compose/deploy (downstream, no Fram
+   coupling). See `fram/docs/coordinator-bind-and-wire.md` §"Securing a non-loopback bind".
 
 ### C. Control plane & scale (later, hosting.md roadmap items 3–6)
 6. **Control plane** — provisioning/lifecycle API, per-tenant daemon supervision/orchestration,
