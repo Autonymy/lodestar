@@ -19,9 +19,15 @@ usage() {
 mint_token() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; }
 hash_token() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
 
-# Upsert one field of a tenant in the EDN registry (bb keeps it valid EDN).
+# Upsert tenant field(s) in the EDN registry (bb keeps it valid EDN). The write is
+# ATOMIC: bb spits a temp file, then `mv` renames it over the registry (same dir =
+# rename(2)), so a concurrently-reloading gateway sees the OLD or the NEW file, never a
+# truncated/partial one. `init` sets port AND token in ONE write so `create` never
+# leaves a port-without-token mid-state for the gateway to cache.
 #   reg_edit <tenant> <add-token|remove-token|set-port> <value>
+#   reg_edit <tenant> init <port> <token-hash>
 reg_edit() {
+  local tmp="$REGISTRY.tmp.$$"
   bb -e "
 (require '[clojure.edn :as edn] '[clojure.java.io :as io] '[clojure.pprint :as pp])
 (def p \"$REGISTRY\")
@@ -31,8 +37,12 @@ reg_edit() {
 (def updated (case \"$2\"
   \"add-token\"    (-> cur (assoc :tokens (conj (tokset cur) \"$3\")) (dissoc :token-sha256))
   \"remove-token\" (-> cur (assoc :tokens (disj (tokset cur) \"$3\")) (dissoc :token-sha256))
-  \"set-port\"     (assoc cur :coordinator-port (Integer/parseInt \"$3\"))))
-(spit p (with-out-str (pp/pprint (assoc reg \"$1\" updated))))"
+  \"set-port\"     (assoc cur :coordinator-port (Integer/parseInt \"$3\"))
+  \"init\"         (-> cur (assoc :coordinator-port (Integer/parseInt \"$3\"))
+                         (assoc :tokens (conj (tokset cur) \"${4:-}\"))
+                         (dissoc :token-sha256))))
+(spit \"$tmp\" (with-out-str (pp/pprint (assoc reg \"$1\" updated))))"
+  mv -f "$tmp" "$REGISTRY"   # atomic rename: readers never see a partial file
 }
 
 [ $# -ge 1 ] || usage
@@ -54,8 +64,7 @@ case "$1" in
     fi
     TDIR="$DATA_ROOT/$TENANT"; mkdir -p "$TDIR"; LOG="$TDIR/claims.log"; touch "$LOG"
     TOKEN="$(mint_token)"
-    reg_edit "$TENANT" set-port "$PORT"
-    reg_edit "$TENANT" add-token "$(hash_token "$TOKEN")"
+    reg_edit "$TENANT" init "$PORT" "$(hash_token "$TOKEN")"   # port + token in ONE atomic write
     FRAM_PORT="$PORT" FRAM_LOG="$LOG" "$FRAM/bin/fram-up"
     echo "provisioned tenant '$TENANT'  port=$PORT  log=$LOG"
     echo "TOKEN (shown once — store it now; only the hash is kept):"
