@@ -1,0 +1,146 @@
+#!/usr/bin/env bb
+;; Lodestar MCP server — the AI-facing edge of one instance.
+;;
+;; Speaks MCP (JSON-RPC 2.0, newline-delimited, over stdio) and maps each tool
+;; call to the existing `lodestar` engine, so it reuses every tested op + the
+;; coordinator write path. Reads are off the warm log; writes serialize through
+;; the coordinator exactly as the CLI does. A consumer chat AI connects, gets the
+;; tools + the cheatsheet (server `instructions`), and never touches a CLI.
+;;
+;; Config (per instance, via env — the same vars the engine reads):
+;;   LODESTAR_BIN   path to the engine wrapper to invoke (default: sibling `lodestar`)
+;;   FRAM_LOG / FRAM_THREADS / provenance vars  passed through to it
+;;
+;; Transport here is stdio (local, zero-setup). HTTP/SSE + auth is the next layer.
+(require '[cheshire.core :as json]
+         '[babashka.process :as proc]
+         '[clojure.java.io :as io]
+         '[clojure.string :as str])
+
+(def here (-> *file* io/file .getCanonicalFile .getParentFile))
+(def engine (or (System/getenv "LODESTAR_BIN") (str here "/lodestar")))
+
+(def cheatsheet
+  (str
+   "Lodestar is a claim-native substrate for coordinating work and life. A "
+   "\"thread\" is a unit of work or thought; under the hood every fact is a claim "
+   "triple (subject predicate object), and a thread is any id that has a `title`. "
+   "Lifecycle is DERIVED from facts, never a stored status: committed (accepted), "
+   "outcome (done), abandoned (canceled), driver (active now), depends_on (blocked).\n\n"
+   "Refs to other threads are written as @<id> (e.g. depends_on @2026-06-16-101500); "
+   "everything else is a literal. ids look like 2026-06-16-101500.\n\n"
+   "How to work with it:\n"
+   "- capture: turn a thought/task into a thread.\n"
+   "- tell / untell: add or retract a single fact about a thread "
+   "(e.g. tell <id> depends_on <other-id>, tell <id> estimate_hours 4, "
+   "tell <id> do_on 2026-06-20, tell <id> outcome shipped).\n"
+   "- ready / next / plate / blocked / agenda / leverage: see what to work on.\n"
+   "- needs-review: judgments whose inputs moved (stale estimates, expired dates, "
+   "edges to abandoned threads) + uncommitted drafts that grew real structure.\n"
+   "- show: read one thread's claims.\n"
+   "- clock start/stop/status/report: log real time against a thread so estimates "
+   "calibrate against actuals over time.\n"
+   "- validate: integrity check.\n"
+   "- presentation: the effective emoji map (condition -> glyph).\n\n"
+   "PRESENTATION CONTRACT: the list tools return an `emoji` field per item, resolved "
+   "from the user's configurable map. Render each item using its given `emoji` as the "
+   "status glyph; do NOT invent your own emoji or decoration. Keep it terse, group by "
+   "project, lead with active work. The user owns the map — to change a glyph: "
+   "tell @ui emoji_<condition> \"<glyph>\" (conditions: active/ready/blocked/draft).\n\n"
+   "Prefer capture for new work and tell/untell for changes; the system serializes "
+   "and rule-checks every write, so just state facts and let it enforce integrity."))
+
+;; tool name -> {desc, schema, argv}. argv maps the JSON arguments map (string
+;; keys) to the engine argument vector.
+(def tools
+  [{:name "ready"        :desc "Threads doable now (committed, unblocked, not active, not done). Returns JSON [{id,title,condition}]."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "ready"])}
+   {:name "next"         :desc "The recommended next thread(s) to pull."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["next"])}
+   {:name "plate"        :desc "Everything open, bucketed by derived condition. Returns JSON [{id,title,condition}] where condition is active/ready/blocked/draft."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "plate"])}
+   {:name "blocked"      :desc "Threads waiting on an unresolved dependency. Returns JSON [{id,title,condition}]."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "blocked"])}
+   {:name "agenda"       :desc "Calendar view: threads bucketed by do_on (overdue/today/upcoming)."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["agenda"])}
+   {:name "leverage"     :desc "High-leverage threads — finishing them unblocks the most downstream work."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["leverage"])}
+   {:name "needs_review" :desc "Belief-revision queue: judgments whose inputs moved. Returns JSON [{id,title,pred,detail}]."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "needs-review"])}
+   {:name "validate"     :desc "Integrity check over the whole graph."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["validate"])}
+   {:name "show"         :desc "Show one thread's claims. Returns JSON [{predicate,value}]."
+    :schema {:type "object" :properties {:id {:type "string"}} :required ["id"]}
+    :argv (fn [a] ["json" "show" (get a "id")])}
+   {:name "capture"      :desc "Create a new thread from a title (a thought or unit of work)."
+    :schema {:type "object" :properties {:title {:type "string"}
+                                         :owner {:type "string" :description "defaults to personal"}}
+             :required ["title"]}
+    :argv (fn [a] ["capture" (get a "title") (get a "owner" "personal")])}
+   {:name "tell"         :desc "Add or replace one fact about a thread. For thread refs (depends_on/part_of/relates_to) pass the bare target id; the engine adds the @."
+    :schema {:type "object" :properties {:id {:type "string"}
+                                         :predicate {:type "string"}
+                                         :value {:type "string"}}
+             :required ["id" "predicate" "value"]}
+    :argv (fn [a] ["tell" (get a "id") (get a "predicate") (get a "value")])}
+   {:name "untell"       :desc "Retract one fact about a thread."
+    :schema {:type "object" :properties {:id {:type "string"}
+                                         :predicate {:type "string"}
+                                         :value {:type "string"}}
+             :required ["id" "predicate" "value"]}
+    :argv (fn [a] ["untell" (get a "id") (get a "predicate") (get a "value")])}
+   {:name "clock_start"  :desc "Start logging time against a thread (one session at a time)."
+    :schema {:type "object" :properties {:id {:type "string"}} :required ["id"]}
+    :argv (fn [a] ["clock" "start" (get a "id")])}
+   {:name "clock_stop"   :desc "Stop the running time session."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["clock" "stop"])}
+   {:name "clock_status" :desc "Show the running session + elapsed."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["clock" "status"])}
+   {:name "clock_report" :desc "Estimate vs actual per thread + calibration %. Returns JSON {rows:[{id,title,est_h,actual_sec,done}],calibration:{pct,sample}}."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "clock-report"])}
+   {:name "presentation" :desc "The effective emoji map (condition -> glyph), engine defaults + user overrides. Returns JSON {active,ready,blocked,draft}."
+    :schema {:type "object" :properties {}} :argv (fn [_] ["json" "presentation"])}])
+
+(defn find-tool [nm] (first (filter #(= (:name %) nm) tools)))
+
+(defn call-tool [nm args]
+  (if-let [t (find-tool nm)]
+    (let [argv (mapv str ((:argv t) (or args {})))
+          {:keys [out err exit]} (apply proc/sh engine argv)
+          errs (str/trim (or err ""))
+          text (str/trim (str out (when (seq errs) (str "\n[stderr] " errs))))]
+      {:content [{:type "text" :text (if (str/blank? text) (str "(done; exit " exit ")") text)}]
+       :isError (not (zero? exit))})
+    {:content [{:type "text" :text (str "unknown tool: " nm)}] :isError true}))
+
+(defn tools-list [] {:tools (mapv (fn [t] {:name (:name t) :description (:desc t) :inputSchema (:schema t)}) tools)})
+
+(defn on-initialize [params]
+  {:protocolVersion (get params "protocolVersion" "2025-06-18")
+   :capabilities {:tools {}}
+   :serverInfo {:name "lodestar" :version "0.1.0"}
+   :instructions cheatsheet})
+
+(defn emit! [m] (println (json/generate-string m)) (flush))
+(defn respond [id result] (emit! {:jsonrpc "2.0" :id id :result result}))
+(defn respond-err [id code msg] (emit! {:jsonrpc "2.0" :id id :error {:code code :message msg}}))
+
+(defn handle [line]
+  (when-not (str/blank? line)
+    (let [msg (try (json/parse-string line) (catch Exception _ nil))]
+      (when msg
+        (let [id (get msg "id") method (get msg "method") params (get msg "params")]
+          (cond
+            (= method "initialize")                 (respond id (on-initialize params))
+            (= method "notifications/initialized")  nil
+            (= method "ping")                       (respond id {})
+            (= method "tools/list")                 (respond id (tools-list))
+            (= method "tools/call")                 (respond id (call-tool (get params "name") (get params "arguments")))
+            (some? id)                              (respond-err id -32601 (str "method not found: " method))
+            :else                                   nil))))))
+
+(loop []
+  (let [line (read-line)]
+    (when (some? line)
+      (handle line)
+      (recur))))

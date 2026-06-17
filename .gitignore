@@ -1,0 +1,4 @@
+# build outputs
+out/
+# engine sources linked in for the build (Fram is the source of truth)
+src/fram

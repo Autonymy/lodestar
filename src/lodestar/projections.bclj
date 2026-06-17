@@ -1,0 +1,68 @@
+#lang beagle/clj
+(ns lodestar.projections
+  "Read-only dependency-derived views over an indexed claim set (k/Index).
+  O(threads) via the index, not O(threads * claims).")
+
+(require fram.kernel :as k)
+
+;; Direct deps of te that are known threads and not yet terminal.
+(defn incomplete-deps [idx :- k/Index te :- String] :- (Vec String)
+  (filterv (fn [d :- String] :- Bool
+             (and (some? (k/one-i idx d "title")) (not (k/terminal-i? idx d))))
+           (k/many-i idx te "depends_on")))
+
+(defn blocked? [idx :- k/Index te :- String] :- Bool
+  (not (empty? (incomplete-deps idx te))))
+
+(defn ready [idx :- k/Index] :- (Vec String)
+  (filterv (fn [te :- String] :- Bool
+             (and (not (k/terminal-i? idx te)) (not (blocked? idx te))))
+           (k/work-thread-ids-i idx)))
+
+(defn blocked [idx :- k/Index] :- (Vec String)
+  (filterv (fn [te :- String] :- Bool
+             (and (not (k/terminal-i? idx te)) (blocked? idx te)))
+           (k/work-thread-ids-i idx)))
+
+;; Derived condition of a non-terminal work thread (shared by plate text + json):
+;;   active = has a driver · ready = committed, unblocked · blocked = committed,
+;;   blocked · draft = not committed.
+(defn condition-i [idx :- k/Index te :- String] :- String
+  (cond
+    [(some? (k/one-i idx te "driver")) "active"]
+    [(some? (k/one-i idx te "committed")) (if (blocked? idx te) "blocked" "ready")]
+    [:else "draft"]))
+
+;; Presentation: a deterministic, user-configurable emoji per condition. Engine
+;; defaults here; any is overridden by a claim `@ui emoji_<condition> "<glyph>"`,
+;; so the map is data the user owns — not the LLM's stochastic choice.
+(defn- default-emoji [c :- String] :- String
+  (cond
+    [(= c "active") "🔵"]
+    [(= c "ready") "🟢"]
+    [(= c "blocked") "🔴"]
+    [(= c "draft") "⚪"]
+    [:else "•"]))
+
+(defn condition-emoji [idx :- k/Index c :- String] :- String
+  (let [o (k/one-i idx "@ui" (str "emoji_" c))]
+    (if (some? o) o (default-emoji c))))
+
+;; --- leverage: transitive reverse-dep walk over the prebuilt revdep index ----
+
+(defn transitive-dependents [idx :- k/Index te :- String] :- (Vec String)
+  (loop [frontier (k/dependents-i idx te)
+         seen []]
+    (if (empty? frontier)
+      seen
+      (let [x (first frontier)
+            rest-f (vec (rest frontier))]
+        (if (k/vec-contains? seen x)
+          (recur rest-f seen)
+          (recur (vec (concat rest-f (k/dependents-i idx x)))
+                 (conj seen x)))))))
+
+(defn leverage-score [idx :- k/Index te :- String] :- Int
+  (count (filterv (fn [d :- String] :- Bool
+                    (and (not (= d te)) (not (k/terminal-i? idx d))))
+                  (transitive-dependents idx te))))

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Lodestar — the life app. Routes LIFE verbs to the Lodestar CLI (lodestar.main,
+# run against the Fram engine on the classpath) and ENGINE verbs to the Fram CLI.
+# Both operate on the same private XDG claim data. Supplies the life domain config
+# (cardinality vocab §1.1 + capture provenance).
+#
+#   engine: ~/code/fram   data: ~/code/lodestar-data (XDG ~/.local/state/lodestar)
+export FRAM_THREADS="${FRAM_THREADS:-$HOME/.local/state/lodestar/threads}"
+export FRAM_LOG="${FRAM_LOG:-$HOME/.local/state/lodestar/claims.log}"
+export FRAM_TIME_DIR="${FRAM_TIME_DIR:-$HOME/.local/state/lodestar/time}"
+export FRAM_SINGLE_VALUED="${FRAM_SINGLE_VALUED:-title owner lead driver source part_of do_on valid_until estimate_hours created_at updated_at name body created_by committed outcome abandoned superseded_by merged_into session_of start_time end_time clockify_id}"
+export CLOCKIFY_SECRET_FILE="${CLOCKIFY_SECRET_FILE:-/run/secrets/clockify-api-key}"
+export LODESTAR_SOURCE="${LODESTAR_SOURCE:-tom}"
+export LODESTAR_AUTHOR="${LODESTAR_AUTHOR:-tom_passarelli}"
+export LODESTAR_LEAD="${LODESTAR_LEAD:-tom_passarelli}"
+export LODESTAR_DRIVER="${LODESTAR_DRIVER:-tom_passarelli}"
+export LODESTAR_PROPOSED_BY="${LODESTAR_PROPOSED_BY:-tom_passarelli}"
+
+FRAM="${FRAM_HOME:-$HOME/code/fram}"
+LODESTAR="$(cd "$(dirname "$0")/.." && pwd)"
+
+case "${1:-}" in
+  ready|blocked|leverage|next|agenda|plate|capture|json|needs-review|audit|doctor|clock)
+    exec bb -cp "$LODESTAR/out:$FRAM/out" -m lodestar.main "$@" ;;
+  up)
+    exec "$FRAM/bin/fram-up" "${@:2}" ;;
+  *)  # engine verbs: import/export/show/validate/set/merge/tell/untell/watch
+    exec "$FRAM/bin/fram" "$@" ;;
+esac
