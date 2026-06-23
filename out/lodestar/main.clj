@@ -46,8 +46,13 @@
 (defn- sig-member-map [claims]
   (reduce (fn [m c] (assoc m (claim-sig c) true)) {} claims))
 
-(defn- pending-coord-count [^String log file-sigs]
-  (count (filterv (fn [v] (and (or (= (:frame v) "coord") (= (:frame v) "agent") (= (:frame v) "cli")) (nil? (get file-sigs (str (:l v) "|" (:p v) "|" (:r v)))))) (fold/fold-latest (fram.rt/read-log log)))))
+(defn- ^String tell-once [port ^String op ^String te ^String pred ^String rv]
+  (let [v (fram.rt/coord-version port)]
+  (if (< v 0) "nodaemon" (if (= op "assert") (fram.rt/coord-assert port te pred rv v) (fram.rt/coord-retract port te pred rv v)))))
+
+(defn- ^String tell-retry [port ^String op ^String te ^String pred ^String rv tries]
+  (let [resp (tell-once port op te pred rv)]
+  (if (and (= resp "conflict") (> tries 0)) (tell-retry port op te pred rv (- tries 1)) resp)))
 
 (defn- ^Boolean ctrl? [^String s]
   (or (str/includes? s "\n") (str/includes? s "\r")))
@@ -58,13 +63,12 @@
 (defn- ^String ref-or-blank [^String v]
   (if (str/blank? v) "" (str "@" v)))
 
-(defn- capture-claims [^String te ^String title ^String owner ^String source ^String author ^String lead ^String driver ^String proposed ^String today]
+(defn- capture-claims [^String te ^String title ^String owner ^String source ^String author ^String lead ^String proposed ^String today]
   (let [c (add-claim [] te "title" title)
    c (if (= owner "personal") c (add-claim c te "owner" owner))
    c (add-claim c te "source" source)
    c (add-claim c te "created_by" (ref-or-blank author))
    c (add-claim c te "lead" (ref-or-blank lead))
-   c (add-claim c te "driver" (ref-or-blank driver))
    c (add-claim c te "proposed_by" (ref-or-blank proposed))
    c (add-claim c te "created_at" today)
    c (add-claim c te "updated_at" today)
@@ -75,27 +79,28 @@
   (let [source (fram.rt/getenv-or "LODESTAR_SOURCE" "self")
    author (fram.rt/getenv-or "LODESTAR_AUTHOR" "you")
    lead (fram.rt/getenv-or "LODESTAR_LEAD" "")
-   driver (fram.rt/getenv-or "LODESTAR_DRIVER" "")
    proposed (fram.rt/getenv-or "LODESTAR_PROPOSED_BY" "")]
   (cond
   (or (str/blank? title) (ctrl? title)) (println "usage: capture <title> [owner]   (title must be a non-empty single line)")
   (ctrl? owner) (println "capture: owner must be a single line")
-  (or (ctrl? source) (ctrl? author) (ctrl? lead) (ctrl? driver) (ctrl? proposed)) (println "capture: LODESTAR_SOURCE/AUTHOR/LEAD/DRIVER/PROPOSED_BY must each be a single line")
+  (or (ctrl? source) (ctrl? author) (ctrl? lead) (ctrl? proposed)) (println "capture: LODESTAR_SOURCE/AUTHOR/LEAD/PROPOSED_BY must each be a single line")
   :else (do
   (fram.rt/ensure-dir threads-dir)
   (let [id (fram.rt/reserve-id threads-dir)
    slug (fram.rt/slugify title)
    today (fram.rt/today-iso)
    te (str "@" id)
-   path (str threads-dir "/" id "-" slug ".md")]
-  (fram.rt/spit-file path (exp/thread-md (capture-claims te title owner source author lead driver proposed today) te))
+   path (str threads-dir "/" id "-" slug ".md")
+   port (fram.rt/coord-port)]
+  (if (< (fram.rt/coord-version port) 0) (do
   (fram.rt/release-id threads-dir id)
-  (let [as (imp/load-corpus threads-dir)
-   file-sigs (sig-member-map (:claims (fold/fold as)))
-   lost (pending-coord-count log file-sigs)]
-  (if (> lost 0) (println (str "captured -> " path "\n" "  NOT imported: " lost " pending coordinator write(s) in the log. " "Re-run `import` (folds in the capture AND those writes), or `import --force`.")) (do
-  (fram.rt/write-log log as)
-  (println (str "captured -> " te "  " title "  [owner: " owner "]\n" "  file:     " path "\n" "  imported: " (count as) " claims. Next: lodestar tell " id " <pred> <value>"))))))))))
+  (println "no coordinator on 127.0.0.1:7977 — writes won't serialize. Run `lodestar up`.")) (let [claims (capture-claims te title owner source author lead proposed today)
+   results (mapv (fn [c] (tell-retry port "assert" (:l c) (:p c) (:r c) 5)) claims)
+   oks (count (filterv (fn [r] (str/starts-with? r "ok:")) results))]
+  (fram.rt/release-id threads-dir id)
+  (if (= oks (count claims)) (do
+  (fram.rt/spit-file path (exp/thread-md (:claims (fold/fold (fram.rt/read-log log))) te))
+  (println (str "captured -> " te "  " title "  [owner: " owner "]\n" "  file:      " path "\n" "  committed: " oks " claims via coordinator. Next: lodestar tell " id " <pred> <value>"))) (println (str "capture PARTIAL: only " oks "/" (count claims) " claim(s) committed (write conflict / no daemon?). Re-run — nothing is stranded in files."))))))))))
 
 (defn cmd-audit [^String log]
   (let [idx (k/build-index (:claims (fold/fold (fram.rt/read-log log))))
@@ -297,14 +302,6 @@
 (defn- ^String fresh-sid [idx ^String seed]
   (if (k/vec-contains? (:subjects idx) (str "@" seed)) (fresh-sid idx (fram.rt/bump-id seed)) seed))
 
-(defn- ^String tell-once [port ^String op ^String te ^String pred ^String rv]
-  (let [v (fram.rt/coord-version port)]
-  (if (< v 0) "nodaemon" (if (= op "assert") (fram.rt/coord-assert port te pred rv v) (fram.rt/coord-retract port te pred rv v)))))
-
-(defn- ^String tell-retry [port ^String op ^String te ^String pred ^String rv tries]
-  (let [resp (tell-once port op te pred rv)]
-  (if (and (= resp "conflict") (> tries 0)) (tell-retry port op te pred rv (- tries 1)) resp)))
-
 (defn cmd-clock-start [^String log ^String id]
   (let [idx (k/build-index (:claims (fold/fold (fram.rt/read-log log))))
    te (str "@" id)
@@ -402,14 +399,24 @@
    daemon-v (fram.rt/coord-version port)
    fresh (= daemon-v log-v)
    file-claims (:claims (fold/fold (imp/load-corpus threads-dir)))
-   synced (= (vec (sort (mapv claim-sig (:claims f)))) (vec (sort (mapv claim-sig file-claims))))]
+   idx (k/build-index (:claims f))
+   thread-log (filterv (fn [c] (some? (k/one-i idx (:l c) "title"))) (:claims f))
+   tl-sigs (sig-member-map thread-log)
+   file-sigs (sig-member-map file-claims)
+   file-ahead (filterv (fn [c] (nil? (get tl-sigs (claim-sig c)))) file-claims)
+   log-behind (filterv (fn [c] (nil? (get file-sigs (claim-sig c)))) thread-log)
+   clean (empty? file-ahead)
+   synced (and clean (empty? log-behind))]
   (println "lodestar doctor")
   (if up (do
   (println (str "  [ok]    coordinator UP on 127.0.0.1:" port))
   (if serving (println "  [ok]    serving the canonical log") (println (str "  [WARN]  daemon is NOT serving " log " — status: " status)))
   (if fresh (println "  [ok]    daemon state matches the on-disk log") (println (str "  [WARN]  daemon is STALE (loaded v" daemon-v ", log is v" log-v ") — the log changed out-of-band; restart: kill it + `lodestar up`")))) (println (str "  [DOWN]  no coordinator on 127.0.0.1:" port " — writes won't serialize. Run `lodestar up`.")))
-  (if synced (println "  [ok]    files <-> claim log in sync") (println "  [WARN]  files diverge from the log — run `import` to absorb file edits before any `export`"))
-  (if (and up (and serving (and synced fresh))) (println "  => healthy: tell/untell + warm reads are safe") (println "  => DEGRADED: fix the warnings above"))))
+  (cond
+  synced (println "  [ok]    files <-> claim log in sync")
+  clean (println (str "  [ok]    files behind the log by " (count log-behind) " thread-claim(s) — benign projection lag; `lodestar export` to refresh"))
+  :else (println (str "  [WARN]  " (count file-ahead) " file claim(s) not in the log " "(a thread .md was hand-edited?) — reconcile via the coordinator, or `import`")))
+  (if (and up (and serving (and clean fresh))) (println "  => healthy: tell/untell + warm reads are safe") (println "  => DEGRADED: fix the warnings above"))))
 
 (defn run [args ^String threads-dir ^String log]
   (let [cmd (if (empty? args) "" (first args))]

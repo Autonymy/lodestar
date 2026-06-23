@@ -19,7 +19,10 @@
 (require fram.rt)
 
 (declare-extern fram.rt/read-log [String -> (Vec fold/Assertion)])
-(declare-extern fram.rt/write-log [String (Vec fold/Assertion) -> Nil])
+;; NOTE: NO write-log extern. Lodestar is a CLIENT — it mutates state ONLY through
+;; the coordinator (tell-retry -> coord-assert/retract). The removed `write-log`
+;; was a direct log-file bypass; capture reached for it and stranded data in files
+;; (the 2026-06-23 divergence bug). Not declaring it makes the bypass impossible.
 (declare-extern fram.rt/today-iso [-> String])
 (declare-extern fram.rt/now-iso [-> String])
 (declare-extern fram.rt/now-id [-> String])
@@ -65,11 +68,21 @@
   (reduce (fn [m :- (Map String Bool) c :- k/Claim] :- (Map String Bool)
             (assoc m (claim-sig c) true))
           {} claims))
-(defn- pending-coord-count [log :- String file-sigs :- (Map String Bool)] :- Int
-  (count (filterv (fn [v :- fold/Latest] :- Bool
-                    (and (or (= (:frame v) "coord") (= (:frame v) "agent") (= (:frame v) "cli"))
-                         (nil? (get file-sigs (str (:l v) "|" (:p v) "|" (:r v))))))
-                  (fold/fold-latest (fram.rt/read-log log)))))
+
+;; --- write THROUGH the coordinator (serialized, safe under concurrent agents) --
+(defn- tell-once [port :- Int op :- String te :- String pred :- String rv :- String] :- String
+  (let [v (fram.rt/coord-version port)]
+    (if (< v 0)
+      "nodaemon"
+      (if (= op "assert")
+        (fram.rt/coord-assert port te pred rv v)
+        (fram.rt/coord-retract port te pred rv v)))))
+
+(defn- tell-retry [port :- Int op :- String te :- String pred :- String rv :- String tries :- Int] :- String
+  (let [resp (tell-once port op te pred rv)]
+    (if (and (= resp "conflict") (> tries 0))
+      (tell-retry port op te pred rv (- tries 1))
+      resp)))
 
 ;; --- terminal capture: a one-line thought -> a thread -> folded -------------
 (defn- ctrl? [s :- String] :- Bool
@@ -82,8 +95,11 @@
   (if (str/blank? v) "" (str "@" v)))
 
 (defn- capture-claims [te :- String title :- String owner :- String source :- String
-                       author :- String lead :- String driver :- String proposed :- String
+                       author :- String lead :- String proposed :- String
                        today :- String] :- (Vec k/Claim)
+  ;; NO `driver` at birth (operating-manual): making a thread active is a deliberate
+  ;; pickup (`tell <id> driver @x`), never a capture default — a driver cell here is
+  ;; exactly the "stray driver" pollution the-model warns about.
   (let [c (add-claim [] te "title" title)
         ;; the-model §7: `personal` is the IMPLICIT owner default — store `owner`
         ;; only for a non-personal (billable/client) owner, so absence == personal.
@@ -91,7 +107,6 @@
         c (add-claim c te "source" source)
         c (add-claim c te "created_by" (ref-or-blank author))
         c (add-claim c te "lead" (ref-or-blank lead))
-        c (add-claim c te "driver" (ref-or-blank driver))
         c (add-claim c te "proposed_by" (ref-or-blank proposed))
         c (add-claim c te "created_at" today)
         c (add-claim c te "updated_at" today)
@@ -102,15 +117,14 @@
   (let [source (fram.rt/getenv-or "LODESTAR_SOURCE" "self")
         author (fram.rt/getenv-or "LODESTAR_AUTHOR" "you")
         lead (fram.rt/getenv-or "LODESTAR_LEAD" "")
-        driver (fram.rt/getenv-or "LODESTAR_DRIVER" "")
         proposed (fram.rt/getenv-or "LODESTAR_PROPOSED_BY" "")]
   (cond
     [(or (str/blank? title) (ctrl? title))
      (println "usage: capture <title> [owner]   (title must be a non-empty single line)")]
     [(ctrl? owner)
      (println "capture: owner must be a single line")]
-    [(or (ctrl? source) (ctrl? author) (ctrl? lead) (ctrl? driver) (ctrl? proposed))
-     (println "capture: LODESTAR_SOURCE/AUTHOR/LEAD/DRIVER/PROPOSED_BY must each be a single line")]
+    [(or (ctrl? source) (ctrl? author) (ctrl? lead) (ctrl? proposed))
+     (println "capture: LODESTAR_SOURCE/AUTHOR/LEAD/PROPOSED_BY must each be a single line")]
     [:else
      (do
        (fram.rt/ensure-dir threads-dir)
@@ -118,21 +132,31 @@
              slug (fram.rt/slugify title)
              today (fram.rt/today-iso)
              te (str "@" id)
-             path (str threads-dir "/" id "-" slug ".md")]
-         (fram.rt/spit-file path
-           (exp/thread-md (capture-claims te title owner source author lead driver proposed today) te))
-         (fram.rt/release-id threads-dir id)
-         (let [as (imp/load-corpus threads-dir)
-               file-sigs (sig-member-map (:claims (fold/fold as)))
-               lost (pending-coord-count log file-sigs)]
-           (if (> lost 0)
-             (println (str "captured -> " path "\n"
-                           "  NOT imported: " lost " pending coordinator write(s) in the log. "
-                           "Re-run `import` (folds in the capture AND those writes), or `import --force`."))
-             (do (fram.rt/write-log log as)
+             path (str threads-dir "/" id "-" slug ".md")
+             port (fram.rt/coord-port)]
+         ;; Coordinator-native: assert each capture claim THROUGH the daemon (the
+         ;; same serialized path as `tell`), then render the .md FROM the log. The
+         ;; log is the source of truth; the file is a regenerated view — so a
+         ;; capture can never strand title/provenance in a file. (The old file-first
+         ;; path did exactly that whenever the log had pending coordinator writes,
+         ;; i.e. routinely under a live fleet — the recurring two-way divergence.)
+         (if (< (fram.rt/coord-version port) 0)
+           (do (fram.rt/release-id threads-dir id)
+               (println "no coordinator on 127.0.0.1:7977 — writes won't serialize. Run `lodestar up`."))
+           (let [claims (capture-claims te title owner source author lead proposed today)
+                 results (mapv (fn [c :- k/Claim] :- String
+                                 (tell-retry port "assert" (:l c) (:p c) (:r c) 5))
+                               claims)
+                 oks (count (filterv (fn [r :- String] :- Bool (str/starts-with? r "ok:")) results))]
+             (fram.rt/release-id threads-dir id)
+             (if (= oks (count claims))
+               (do
+                 (fram.rt/spit-file path (exp/thread-md (:claims (fold/fold (fram.rt/read-log log))) te))
                  (println (str "captured -> " te "  " title "  [owner: " owner "]\n"
-                               "  file:     " path "\n"
-                               "  imported: " (count as) " claims. Next: lodestar tell " id " <pred> <value>")))))))])))
+                               "  file:      " path "\n"
+                               "  committed: " oks " claims via coordinator. Next: lodestar tell " id " <pred> <value>")))
+               (println (str "capture PARTIAL: only " oks "/" (count claims)
+                             " claim(s) committed (write conflict / no daemon?). Re-run — nothing is stranded in files.")))))))])))
 
 ;; Entity-drift audit: repo path-form collisions (tags retired with relates_to).
 (defn cmd-audit [log :- String] :- Nil
@@ -330,20 +354,6 @@
     (fresh-sid idx (fram.rt/bump-id seed))
     seed))
 
-(defn- tell-once [port :- Int op :- String te :- String pred :- String rv :- String] :- String
-  (let [v (fram.rt/coord-version port)]
-    (if (< v 0)
-      "nodaemon"
-      (if (= op "assert")
-        (fram.rt/coord-assert port te pred rv v)
-        (fram.rt/coord-retract port te pred rv v)))))
-
-(defn- tell-retry [port :- Int op :- String te :- String pred :- String rv :- String tries :- Int] :- String
-  (let [resp (tell-once port op te pred rv)]
-    (if (and (= resp "conflict") (> tries 0))
-      (tell-retry port op te pred rv (- tries 1))
-      resp)))
-
 (defn cmd-clock-start [log :- String id :- String] :- Nil
   (let [idx (k/build-index (:claims (fold/fold (fram.rt/read-log log))))
         te (str "@" id)
@@ -471,7 +481,21 @@
         daemon-v (fram.rt/coord-version port)
         fresh (= daemon-v log-v)
         file-claims (:claims (fold/fold (imp/load-corpus threads-dir)))
-        synced (= (vec (sort (mapv claim-sig (:claims f)))) (vec (sort (mapv claim-sig file-claims))))]
+        idx (k/build-index (:claims f))
+        ;; Files are a PROJECTION of the log: only title-bearing threads render to a
+        ;; .md, so person nodes / non-thread entities live ONLY in the log. Compare
+        ;; against the thread-claim slice, not the whole log — else doctor is wedged
+        ;; DEGRADED forever by e.g. a `display_name` person node it cannot represent.
+        thread-log (filterv (fn [c :- k/Claim] :- Bool (some? (k/one-i idx (:l c) "title"))) (:claims f))
+        tl-sigs (sig-member-map thread-log)
+        file-sigs (sig-member-map file-claims)
+        ;; file-ahead = a thread .md was hand-edited (claim not in the log) — the ONE
+        ;; real hazard. log-behind = log moved ahead, files not yet re-rendered —
+        ;; benign (a capture/tell that hasn't been exported), never DEGRADED.
+        file-ahead (filterv (fn [c :- k/Claim] :- Bool (nil? (get tl-sigs (claim-sig c)))) file-claims)
+        log-behind (filterv (fn [c :- k/Claim] :- Bool (nil? (get file-sigs (claim-sig c)))) thread-log)
+        clean (empty? file-ahead)
+        synced (and clean (empty? log-behind))]
     (println "lodestar doctor")
     (if up
       (do
@@ -484,10 +508,13 @@
           (println (str "  [WARN]  daemon is STALE (loaded v" daemon-v ", log is v" log-v
                         ") — the log changed out-of-band; restart: kill it + `lodestar up`"))))
       (println (str "  [DOWN]  no coordinator on 127.0.0.1:" port " — writes won't serialize. Run `lodestar up`.")))
-    (if synced
-      (println "  [ok]    files <-> claim log in sync")
-      (println "  [WARN]  files diverge from the log — run `import` to absorb file edits before any `export`"))
-    (if (and up (and serving (and synced fresh)))
+    (cond
+      [synced (println "  [ok]    files <-> claim log in sync")]
+      [clean  (println (str "  [ok]    files behind the log by " (count log-behind)
+                            " thread-claim(s) — benign projection lag; `lodestar export` to refresh"))]
+      [:else  (println (str "  [WARN]  " (count file-ahead) " file claim(s) not in the log "
+                            "(a thread .md was hand-edited?) — reconcile via the coordinator, or `import`"))])
+    (if (and up (and serving (and clean fresh)))
       (println "  => healthy: tell/untell + warm reads are safe")
       (println "  => DEGRADED: fix the warnings above"))))
 
