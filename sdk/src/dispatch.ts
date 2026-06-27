@@ -3,8 +3,6 @@ import { getThreadClaims } from "./lodestar-client";
 import { derivePosture, buildPrompt } from "./posture";
 import { StreamWriter } from "./stream-writer";
 
-const LODESTAR_PORT = 7977;
-
 const PLAN_TOOLS = ["Read", "Grep", "Glob", "Bash"];
 const EXEC_TOOLS = ["Read", "Edit", "Write", "Bash", "Grep", "Glob"];
 const SURVEY_TOOLS = ["Read", "Grep", "Glob"];
@@ -16,13 +14,14 @@ interface DispatchResult {
 }
 
 export async function dispatch(threadId: string): Promise<DispatchResult> {
-  const claims = await getThreadClaims(LODESTAR_PORT, threadId);
+  const claims = getThreadClaims(threadId);
   if (!claims.length) {
     throw new Error(`Thread @${threadId} not found or has no claims`);
   }
 
-  // Derive posture from claims. hasChildren=false until we wire the query protocol.
-  const hasChildren = false;
+  const { getChildren } = await import("./lodestar-client");
+  const children = getChildren(threadId);
+  const hasChildren = children.length > 0;
   const posture = derivePosture(claims, hasChildren);
 
   if (posture.hasOutcome) {
