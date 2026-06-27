@@ -58,13 +58,22 @@ try {
     check("click selects different agent", before !== after, "selection moved");
   }
 
-  // Cytoscape mounted: it injects <canvas> layers into #cy (async, on-mount action)
+  // Default view is Board (kanban): lanes render server-side, no #cy yet.
+  const lanes = await page.$$eval('[data-testid="kanban"] > div', (els) => els.length);
+  check("kanban lanes (board default)", lanes === 4, `${lanes} lanes`);
+  const toggle = await page.$('[data-testid="view-toggle"]');
+  check("view toggle present", toggle !== null);
+
+  // Toggle to Graph → Cytoscape mounts (injects <canvas> layers into #cy).
   let canvases = 0;
-  try {
-    await page.waitForSelector("#cy canvas", { timeout: 8000 });
-    canvases = await page.$$eval("#cy canvas", (els) => els.length);
-  } catch (_) {}
-  check("cytoscape canvas in #cy", canvases > 0, `${canvases} canvas layers`);
+  if (toggle) {
+    await toggle.click();
+    try {
+      await page.waitForSelector("#cy canvas", { timeout: 8000 });
+      canvases = await page.$$eval("#cy canvas", (els) => els.length);
+    } catch (_) {}
+  }
+  check("graph view mounts cytoscape on toggle", canvases > 0, `${canvases} canvas layers`);
 
   // graph has nodes (cytoscape instance node count, via the global if exposed)
   const apiNodes = await page.evaluate(async () => {

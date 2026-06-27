@@ -35,6 +35,9 @@ defmodule Lodestar.Presence do
     roles = roles(port, h)
     model = Fram.resolved(port, "@agent:#{h}", "model")
     tok = Map.get(tokens, h, %{context: 0, total: 0})
+    focus = !is_nil(active_workflow) or !is_nil(current_thread) or !is_nil(task)
+    spawned_at = Fram.resolved(port, "@agent:#{h}", "spawned_at")
+    elapsed_str = elapsed_str(spawned_at, now)
 
     %{
       uuid: h,
@@ -49,7 +52,11 @@ defmodule Lodestar.Presence do
       task: task,
       context_tokens: tok.context,
       total_tokens: tok.total,
-      focus: !is_nil(active_workflow) or !is_nil(current_thread) or !is_nil(task),
+      focus: focus,
+      # "thinking" = live AND working on something; elapsed measured from spawn.
+      spawned_at: spawned_at,
+      thinking: online and focus,
+      elapsed_str: elapsed_str,
       # display strings precomputed server-side (keep template client-stdlib-free)
       roles_str: Enum.join(roles, ", "),
       model_str: model || "",
@@ -58,6 +65,23 @@ defmodule Lodestar.Presence do
       focus_str: active_workflow || current_thread || task || ""
     }
   end
+
+  # spawned_at is ISO-8601 with nanoseconds; "" when nil/unparseable.
+  defp elapsed_str(spawned_at, now) when is_binary(spawned_at) do
+    with {:ok, dt, _offset} <- DateTime.from_iso8601(spawned_at) do
+      now_s = div(now, 1000)
+      fmt_duration(now_s - DateTime.to_unix(dt))
+    else
+      _ -> ""
+    end
+  end
+
+  defp elapsed_str(_spawned_at, _now), do: ""
+
+  # whole-second elapsed -> "Xh Ym" / "Xm Ys" / "Xs"
+  defp fmt_duration(s) when s >= 3600, do: "#{div(s, 3600)}h #{div(rem(s, 3600), 60)}m"
+  defp fmt_duration(s) when s >= 60, do: "#{div(s, 60)}m #{rem(s, 60)}s"
+  defp fmt_duration(s), do: "#{max(s, 0)}s"
 
   @doc "Fleet token totals for the status line: %{context, total} as display strings."
   def fleet_tokens(roster) do

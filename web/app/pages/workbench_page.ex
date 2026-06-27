@@ -19,19 +19,27 @@ defmodule LodestarWeb.WorkbenchPage do
     roster = Lodestar.Presence.roster()
     selected = roster |> List.first() |> then(&(&1 && &1.uuid))
 
-    component
-    |> put_state(
+    put_state(component,
       agents: roster,
       fleet: Lodestar.Presence.fleet_tokens(roster),
       selected: selected,
-      messages: if(selected, do: Lodestar.Stream.messages(selected), else: [])
+      messages: if(selected, do: Lodestar.Stream.messages(selected), else: []),
+      view: "board",
+      board: Lodestar.Threads.board()
     )
-    |> put_action(:mount_graph)
   end
 
   def action(:mount_graph, _params, component) do
     JS.exec("window.mountDag && window.mountDag('cy')")
     component
+  end
+
+  # Board (kanban) ⇄ Graph (DAG). Switching to graph mounts Cytoscape after the
+  # #cy element has rendered (small delay), since it only exists in graph view.
+  def action(:toggle_view, _params, component) do
+    next = if component.state.view == "graph", do: "board", else: "graph"
+    component = put_state(component, :view, next)
+    if next == "graph", do: put_action(component, name: :mount_graph, delay: 60), else: component
   end
 
   def action(:select_agent, params, component), do: select(component, params.uuid)
@@ -73,13 +81,36 @@ defmodule LodestarWeb.WorkbenchPage do
     <div class="grid grid-cols-2 gap-4 p-4 h-screen">
       <section class={panel_cls()} data-testid="panel">
         <div class={title_cls()}>work bench</div>
-        <div class="flex-1 min-h-0 overflow-hidden"><div id="cy" class="w-full h-full"></div></div>
+        <div class="flex-1 min-h-0 overflow-hidden" data-testid="workarea">
+          {%if @view == "graph"}
+            <div id="cy" class="w-full h-full"></div>
+          {%else}
+            <div class="flex gap-3 h-full overflow-x-auto" data-testid="kanban">
+              {%for lane <- @board.lanes}
+                <div class="flex flex-col gap-2 w-[210px] shrink-0">
+                  <div class="text-[11px] uppercase tracking-wide text-muted flex items-center gap-2">
+                    {lane.label} <span class="text-star">{length(lane.cards)}</span>
+                  </div>
+                  <div class="flex flex-col gap-2 overflow-y-auto">
+                    {%for c <- lane.cards}
+                      <div class={"border border-edge rounded-lg p-2 text-xs " <> card_cls(c.status)}>
+                        <div class="text-ink leading-snug">{c.label}</div>
+                        {%if c.driver}<div class="text-accent font-mono text-[10px] mt-1">{"@" <> c.driver}</div>{/if}
+                      </div>
+                    {/for}
+                    {%if lane.cards == []}<div class="text-muted text-[11px] italic">—</div>{/if}
+                  </div>
+                </div>
+              {/for}
+            </div>
+          {/if}
+        </div>
         <div class={cli_cls()}>
           <span class={cli_tag_cls()}>ultracode</span>
           <span class="text-accent">&gt;</span> <span class="text-muted">cli</span>
         </div>
         <div class={status_cls()}>
-          <span class="border border-edge rounded-md px-2 py-0.5 text-ink text-[11px]">View: Board</span>
+          <span class="border border-edge rounded-md px-2 py-0.5 text-ink text-[11px] cursor-pointer hover:border-accent" data-testid="view-toggle" $click="toggle_view">View: {view_label(@view)}</span>
           <span class="border border-edge rounded-md px-2 py-0.5 text-ink text-[11px]">Types: Threads</span>
         </div>
       </section>
@@ -126,4 +157,12 @@ defmodule LodestarWeb.WorkbenchPage do
   defp msg_cls("tool"), do: "text-accent font-mono text-[11px] bg-accent/10 rounded-[5px] px-1.5 py-0.5 self-start"
   defp msg_cls("result"), do: "text-ok border-l-2 border-ok pl-2"
   defp msg_cls(_), do: "text-ink"
+
+  defp card_cls("active"), do: "border-l-2 border-l-star"
+  defp card_cls("blocked"), do: "border-l-2 border-l-warn"
+  defp card_cls("ready"), do: "border-l-2 border-l-accent"
+  defp card_cls(_), do: "border-l-2 border-l-muted"
+
+  defp view_label("graph"), do: "Graph"
+  defp view_label(_), do: "Board"
 end

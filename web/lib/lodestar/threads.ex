@@ -15,8 +15,37 @@ defmodule Lodestar.Threads do
   @dag_preds ~w(depends_on part_of)
   @max_nodes 60
 
+  # Kanban lane order; done/abandoned never reach here (scoped out by `open`).
+  @lanes [{"active", "Active"}, {"blocked", "Blocked"}, {"ready", "Ready"}, {"backlog", "Backlog"}]
+
   @doc "%{nodes: [%{id,label,status,driver}], edges: [%{source,target,kind}]} — Cytoscape-ready."
   def graph(port \\ nil) do
+    %{cards: cards, dedges: dedges, keep: keep} = scoped(port)
+
+    kedges =
+      dedges
+      |> Enum.filter(&(MapSet.member?(keep, &1.from) and MapSet.member?(keep, &1.to)))
+      |> Enum.map(&%{source: &1.from, target: &1.to, kind: &1.pred})
+
+    %{nodes: cards, edges: kedges}
+  end
+
+  @doc "%{lanes: [%{key,label,cards: [%{id,label,status,driver}]}]} — same scoped threads, grouped by status."
+  def board(port \\ nil) do
+    %{cards: cards} = scoped(port)
+    by_status = Enum.group_by(cards, & &1.status)
+
+    lanes =
+      for {key, label} <- @lanes do
+        %{key: key, label: label, cards: Map.get(by_status, key, [])}
+      end
+
+    %{lanes: lanes}
+  end
+
+  # Shared "compute scoped threads" core for graph/0 + board/0 — no logic drift.
+  # Returns the scoped cards (graph nodes), the surviving dag edges, and the keep set.
+  defp scoped(port) do
     port = port || Fram.board_port()
     {node_attrs, edges} = fold(Fram.all_triples(port))
 
@@ -40,7 +69,7 @@ defmodule Lodestar.Threads do
       |> Enum.take(@max_nodes)
       |> MapSet.new()
 
-    nodes =
+    cards =
       keep
       |> Enum.map(fn id ->
         %{
@@ -51,12 +80,7 @@ defmodule Lodestar.Threads do
         }
       end)
 
-    kedges =
-      dedges
-      |> Enum.filter(&(MapSet.member?(keep, &1.from) and MapSet.member?(keep, &1.to)))
-      |> Enum.map(&%{source: &1.from, target: &1.to, kind: &1.pred})
-
-    %{nodes: nodes, edges: kedges}
+    %{cards: cards, dedges: dedges, keep: keep}
   end
 
   defp fold(trips) do

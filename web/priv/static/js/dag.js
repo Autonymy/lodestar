@@ -90,10 +90,16 @@
       return;
     }
 
-    if (cy) {
+    // View-toggle re-mounts into a fresh #cy element; if the old instance is
+    // still bound to the same live node, just refresh data — otherwise rebuild.
+    if (cy && cy.container() === el) {
       cy.json({ elements: toElements(data) });
       cy.layout(layoutOpts()).run();
       return;
+    }
+    if (cy) {
+      try { cy.destroy(); } catch (_) {}
+      cy = null;
     }
 
     cy = cytoscape({
