@@ -1,6 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { getThreadClaims } from "./lodestar-client";
 import { derivePosture, buildPrompt } from "./posture";
+import { StreamWriter } from "./stream-writer";
 
 const LODESTAR_PORT = 7977;
 
@@ -41,6 +42,9 @@ export async function dispatch(threadId: string): Promise<DispatchResult> {
       ? "atomic"
       : "composite";
 
+  const agentId = `sdk-${threadId.replace(/[^a-z0-9]/gi, "").slice(-12)}`;
+  const stream = new StreamWriter(agentId);
+
   console.log(`[dispatch] @${threadId} — ${posture.title}`);
   console.log(`[dispatch] posture: ${postureLabel}, tools: ${tools.join(",")}`);
 
@@ -55,6 +59,7 @@ export async function dispatch(threadId: string): Promise<DispatchResult> {
     },
   })) {
     const msg = message as any;
+    stream.writeSDKMessage(msg);
 
     if ("result" in msg) {
       result = msg.result;
@@ -79,18 +84,19 @@ export async function dispatchParallel(
   return Promise.all(threadIds.map((id) => dispatch(id)));
 }
 
-async function main() {
+if (import.meta.main) {
   const threadId = process.argv[2];
   if (!threadId) {
     console.error("usage: bun run src/dispatch.ts <thread-id>");
     process.exit(1);
   }
 
-  const result = await dispatch(threadId);
-  console.log(JSON.stringify(result, null, 2));
+  dispatch(threadId)
+    .then((result) => {
+      console.log(JSON.stringify(result, null, 2));
+    })
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
 }
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
