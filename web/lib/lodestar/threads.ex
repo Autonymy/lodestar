@@ -40,7 +40,7 @@ defmodule Lodestar.Threads do
   def focused(focus_id, port \\ nil) do
     focus = if String.starts_with?(focus_id, "@"), do: focus_id, else: "@" <> focus_id
     port = port || Fram.board_port()
-    {node_attrs, edges} = fold(Fram.all_triples(port))
+    {node_attrs, edges} = Lodestar.GraphCache.fold(port)
 
     titled = for {id, attrs} <- node_attrs, Map.get(attrs, "title", "") != "", into: %{}, do: {id, attrs}
     by_from = Enum.group_by(edges, & &1.from)
@@ -142,7 +142,7 @@ defmodule Lodestar.Threads do
 
   def list(port \\ nil) do
     port = port || Fram.board_port()
-    {node_attrs, edges} = fold(Fram.all_triples(port))
+    {node_attrs, edges} = Lodestar.GraphCache.fold(port)
     titled = for {id, attrs} <- node_attrs, Map.get(attrs, "title", "") != "", into: %{}, do: {id, attrs}
     by_from = Enum.group_by(edges, & &1.from)
     online = Lodestar.Presence.online_refs()
@@ -232,7 +232,7 @@ defmodule Lodestar.Threads do
   # Returns the scoped cards (graph nodes), the surviving dag edges, and the keep set.
   defp scoped(port) do
     port = port || Fram.board_port()
-    {node_attrs, edges} = fold(Fram.all_triples(port))
+    {node_attrs, edges} = Lodestar.GraphCache.fold(port)
 
     titled = for {id, attrs} <- node_attrs, Map.get(attrs, "title", "") != "", into: %{}, do: {id, attrs}
     by_from = Enum.group_by(edges, & &1.from)
@@ -270,6 +270,9 @@ defmodule Lodestar.Threads do
 
     %{cards: cards, dedges: dedges, keep: keep}
   end
+
+  @doc "Uncached fold of the full graph (all_triples → {node_attrs, edges}). The cache calls this."
+  def fold_triples(port), do: fold(Fram.all_triples(port))
 
   defp fold(trips) do
     Enum.reduce(trips, {%{}, []}, fn [s, p, o], {nodes, edges} ->

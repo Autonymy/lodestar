@@ -14,6 +14,8 @@ defmodule Lodestar.Application do
       # One supervised subscriber per fram daemon — the live commit→push spine.
       Supervisor.child_spec({Lodestar.DaemonSubscriber, name: :sub_agents, graph: "agents", port: 7978}, id: :sub_agents),
       Supervisor.child_spec({Lodestar.DaemonSubscriber, name: :sub_board, graph: "board", port: 7977}, id: :sub_board),
+      # Materialized board-graph fold; refreshed on commit (off the request path).
+      Lodestar.GraphCache,
       # Start to serve requests, typically the last entry
       LodestarWeb.Endpoint
     ]
