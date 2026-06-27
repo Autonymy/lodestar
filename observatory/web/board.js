@@ -313,15 +313,25 @@
     const driver = (driverEdge ? driverEdge.to : null) || a.driver;
     if (driver) {
       const isAgent = driver.startsWith('@agent:');
-      const rawHandle = driver.replace('@agent:', '').replace('@role:', '');
+      const uuid = isAgent ? driver.slice('@agent:'.length) : null;
+      const prow = uuid ? (presenceByUuid || {})[uuid] : null;
       const dchip = mk('span', 'bchip bchip-driver' + (isAgent ? ' bchip-driver-link' : ''));
-      const av = mk('span', 'agent-av');
-      av.textContent = rawHandle.charAt(0).toUpperCase();
-      av.style.background = agentColor(rawHandle);
-      dchip.append(av, shorten(rawHandle));
+      if (isAgent && prow) {
+        dchip.style.borderLeft = '3px solid ' + stalenessBorderColor(prow.staleness_bucket);
+        dchip.style.paddingLeft = '.35rem';
+        const dot = mk('span', 'agent-dot ' + (prow.online ? 'agent-dot-on' : 'agent-dot-off'));
+        const roles = prow.roles || [];
+        const label = roles.length > 0 ? String(roles[0]).replace(/^@?role:/, '') : uuid.slice(0, 8);
+        dchip.append(dot, label);
+      } else {
+        const rawHandle = driver.replace('@agent:', '').replace('@role:', '');
+        const av = mk('span', 'agent-av');
+        av.textContent = rawHandle.charAt(0).toUpperCase();
+        av.style.background = agentColor(rawHandle);
+        dchip.append(av, shorten(rawHandle));
+      }
       if (isAgent) {
-        const uuid = driver.slice('@agent:'.length);
-        dchip.title = 'Open agent stream';
+        dchip.title = uuid;
         dchip.addEventListener('click', e => {
           e.stopPropagation();
           if (window.Lodestar) Lodestar.openAgentStream(uuid);
@@ -420,7 +430,8 @@
 
     const state = {
       threads: [], byFrom: {}, ownerFilter: 'all', selectedId: null,
-      showActiveOnly: false, activeUuids: new Set(), currentView: 'kanban'
+      showActiveOnly: false, activeUuids: new Set(), currentView: 'kanban',
+      presenceByUuid: {}
     };
 
     // ── drawer ────────────────────────────────────────────────────────────────
@@ -749,6 +760,7 @@
       state.threads = threads;
       state.byFrom = byFrom;
       state.activeUuids = buildActiveSet(presence);
+      state.presenceByUuid = Object.fromEntries((presence || []).map(r => [r.uuid, r]));
 
       const agentSet = new Set();
       for (const t of threads) {

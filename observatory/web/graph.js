@@ -625,9 +625,9 @@ const Graph = (function () {
     box.innerHTML = '';
 
     // UNIFY: clicking an agent node drives the live "watch it think" stream.
-    if (type === 'agent' && window.FrameScope) {
+    if (type === 'agent' && window.Lodestar) {
       const act = el2('button', 'node-action', '▶ watch this agent think');
-      act.onclick = () => window.FrameScope.openAgentStream(id.slice('@agent:'.length));
+      act.onclick = () => window.Lodestar.openAgentStream(id.slice('@agent:'.length));
       box.append(act);
     }
     // a @team node: operate the group right from its detail pane.
@@ -815,7 +815,7 @@ const Graph = (function () {
         const handle = src.id().startsWith('@agent:') ? src.id().slice('@agent:'.length) : src.id();
         const work = target.data('label') || target.id();
         fetch('/steer', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ to: handle, body: `you are now driver of ${target.id()} — "${work}". (assigned from framescope)` }) }).catch(() => {});
+          body: JSON.stringify({ to: handle, body: `you are now driver of ${target.id()} — "${work}". (assigned from lodestar)` }) }).catch(() => {});
       }
       toast(`${verb}: ${shortId(subj)} ${a.pred} ${shortId(obj)}`);
     } catch (e) { toast('write failed — bridge needs restart?'); }
@@ -922,7 +922,7 @@ const Graph = (function () {
     const names = members.map(m => m.data('label') || m.id());
     members.forEach(m => {
       const me = m.data('label') || m.id();
-      ping(handleOf(m.id()), `you're on team ${teamId} with ${names.filter(x => x !== me).join(', ')}. work together${reqs ? ': ' + reqs : ''}. (from framescope)`);
+      ping(handleOf(m.id()), `you're on team ${teamId} with ${names.filter(x => x !== me).join(', ')}. work together${reqs ? ': ' + reqs : ''}. (from lodestar)`);
     });
     flash(teamId); toast(`▶ pinged ${members.length} teammates`);
   }
@@ -933,7 +933,7 @@ const Graph = (function () {
     const members = teamMembers(teamId);
     const retract = (from, pred, to) => fetch('/retract', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from, pred, to }) }).catch(() => {});
-    members.forEach(m => { retract(teamId, 'member', m.id()); ping(handleOf(m.id()), `team ${teamId} dissolved — stand down the joint effort. (from framescope)`); });
+    members.forEach(m => { retract(teamId, 'member', m.id()); ping(handleOf(m.id()), `team ${teamId} dissolved — stand down the joint effort. (from lodestar)`); });
     const title = (n.data('attrs') || {}).title;
     if (title) retract(teamId, 'title', title);
     n.remove(); hideNode(); syncSelection();
@@ -999,7 +999,7 @@ const Graph = (function () {
     Raw:        { mode: 'raw',       layout: 'force', size: 'messages', graphVisible: ALL_GRAPHS },
     Timeline:   { mode: 'backbone',  layout: 'time',  size: 'recency',  edgeLayers: { struct: true, talk: true, child: false, working: true } },
   };
-  const PRESET_KEY = 'framescope.presets';
+  const PRESET_KEY = 'lodestar.presets';
   function userPresets() { try { return JSON.parse(localStorage.getItem(PRESET_KEY)) || {}; } catch (e) { return {}; } }
   function writeUserPresets(p) { try { localStorage.setItem(PRESET_KEY, JSON.stringify(p)); } catch (e) {} }
   // current engine state as a preset object (what "Save preset" captures).

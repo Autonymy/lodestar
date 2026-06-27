@@ -1,4 +1,4 @@
-(ns framescope.board)
+(ns lodestar.board)
 
 ;; LIVE EXTERNAL FEED — the thread store mirrors a flat-rows projection of the bridge's
 ;; /graph endpoints (board :7977 + work :7978). The bridge serves /graph as {nodes,edges}
@@ -80,5 +80,5 @@
 ;; multi-column layout or drag-and-drop primitive), so the kanban columns and the
 ;; drag→POST /edge claim-write live in a host-shell mount that reads the SAME thread store
 ;; (window.wake.stores.threads) + selection bus. The shell defines
-;; window.framescope.mountKanban({ el, wake }); wake carves the container and hands it the bus.
-(panel board-kanban :mount "framescope.mountKanban")
+;; window.lodestar.mountKanban({ el, wake }); wake carves the container and hands it the bus.
+(panel board-kanban :mount "lodestar.mountKanban")

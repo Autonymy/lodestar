@@ -16,13 +16,13 @@
 <body>
   <div id="app"></div>
 
-  <!-- SHELL STUBS — stand in for framescope's real custom panes. wake carves a container
-       per (panel … :mount "framescope.mountX") and hands it { el, wake }; the pane shares
+  <!-- SHELL STUBS — stand in for lodestar's real custom panes. wake carves a container
+       per (panel … :mount "lodestar.mountX") and hands it { el, wake }; the pane shares
        the SAME /presence feed (wake.feed.onUpdate) + selection (wake.selection) as the
-       entity-view. framescope swaps the real Cytoscape graph (web/graph.js) and stream-tail
+       entity-view. lodestar swaps the real Cytoscape graph (web/graph.js) and stream-tail
        in here later — the seam (el + window.wake) does not change. -->
   <script>
-    window.framescope = window.framescope || {};
+    window.lodestar = window.lodestar || {};
     function _pane(el, title) {
       const h = document.createElement('div');
       h.style.cssText = 'font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted-foreground);margin-bottom:6px';
@@ -32,8 +32,8 @@
       el.appendChild(h); el.appendChild(body);
       return body;
     }
-    window.framescope.mountGraph = ({ el, wake }) => {
-      const body = _pane(el, 'framescope · agent graph (Cytoscape mount-point)');
+    window.lodestar.mountGraph = ({ el, wake }) => {
+      const body = _pane(el, 'lodestar · agent graph (Cytoscape mount-point)');
       const render = () => {
         const rows = wake && wake.stores && wake.stores.agents ? wake.stores.agents.all() : [];
         const sel = wake && wake.selection ? wake.selection.get() : null;
@@ -42,8 +42,8 @@
       render();
       if (wake && wake.feed) wake.feed.onUpdate(() => render());
     };
-    window.framescope.mountStream = ({ el, wake }) => {
-      const body = _pane(el, 'framescope · live stream-tail');
+    window.lodestar.mountStream = ({ el, wake }) => {
+      const body = _pane(el, 'lodestar · live stream-tail');
       let n = 0;
       const line = (t) => {
         const d = document.createElement('div');

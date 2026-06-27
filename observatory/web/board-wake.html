@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Board — wake dogfood (framescope)</title>
+  <title>Board — wake dogfood (lodestar)</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/geist@1/index.min.css">
   <link rel="stylesheet" href="board-wake-dist.css">
   <style>
@@ -37,7 +37,7 @@
 <body>
   <div id="app"></div>
 
-  <!-- ── HOST-SHELL SEAM (stands in for framescope's cockpit shell) ──────────────────────
+  <!-- ── HOST-SHELL SEAM (stands in for lodestar's cockpit shell) ───────────────────────
        Two host-shell concerns the wake view surface can't express, both wired to the SAME
        wake thread store + selection bus:
 
@@ -54,7 +54,7 @@
            window.wake.stores.threads + wake.selection. Drop on a column applies the lifecycle
            transition via the bridge's existing /edge endpoint, then the live feed re-pulls. -->
   <script>
-    window.framescope = window.framescope || {};
+    window.lodestar = window.lodestar || {};
 
     const COLS = [
       { id: 'backlog',   label: 'Backlog' },
@@ -173,7 +173,7 @@
       }
     }
 
-    window.framescope.mountKanban = ({ el, wake }) => {
+    window.lodestar.mountKanban = ({ el, wake }) => {
       const store = wake && wake.stores && wake.stores.threads;
       el.innerHTML = '';
       const title = document.createElement('div');
