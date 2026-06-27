@@ -12,8 +12,7 @@
   // lens key -> accent (the dot + count chip). Lenses are the default grouping
   // of the orthogonal axes; per-row badges show the axes themselves.
   const HUE = {
-    active: EF.star, blocked: EF.warn, scheduled: EF.ok,
-    unscheduled: EF.accent, draft: EF.purple,
+    active: EF.star, blocked: EF.warn, committed: EF.ok, draft: EF.purple,
   };
 
   function el(tag, style, text) {
@@ -84,15 +83,15 @@
         `font-size:10px;color:${color};border:1px solid ${color}55;border-radius:3px;padding:0 5px;white-space:nowrap;`, txt);
       c.title = title; return c;
     };
-    if (item.committed) wrap.append(chip("spec", EF.accent, "committed — plan resolved, ready to execute"));
-    if (item.scheduled) wrap.append(chip(item.do_on || "scheduled", EF.ok, "scheduled (do_on)"));
+    if (item.committed) wrap.append(chip("spec", EF.accent, "committed — plan resolved"));
+    if (item.scheduled) wrap.append(chip("◷ " + (item.do_on || "soon"), EF.ok, "scheduled (do_on)"));
     if (item.active && item.driver) wrap.append(chip(item.driver.replace(/^@/, ""), EF.star, "active — agent driving now"));
     if (item.blocked) wrap.append(chip("blocked", EF.warn, "blocked — open dependency"));
     return wrap;
   }
 
   function row(item) {
-    const draggable = item.lens === "scheduled"; // only the next-up queue reorders
+    const draggable = item.lens === "committed"; // reorder the actionable pool
     const r = el("div",
       `display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid ${EF.edge};` +
       `cursor:${draggable ? "grab" : "default"};font-size:13px;color:${EF.ink};`);
@@ -155,9 +154,9 @@
       caret.textContent = nowFolded ? "▸" : "▾";
     };
 
-    // DRAG-RESEQUENCE (scheduled/next queue only): reorder rows, then persist the
+    // DRAG-RESEQUENCE (committed/actionable pool): reorder rows, then persist the
     // new order as `priority` claims (10,20,30…) — claims-native, survives reload.
-    if (g.key === "scheduled" && g.items.length > 1) {
+    if (g.key === "committed" && g.items.length > 1) {
       body.addEventListener("dragstart", (e) => {
         dragEl = e.target.closest("[data-id]");
         if (dragEl) dragEl.style.opacity = "0.4";

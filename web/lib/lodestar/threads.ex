@@ -53,11 +53,15 @@ defmodule Lodestar.Threads do
   # The default DEFAULT lens groups by one urgency axis (no duplicate rows); each
   # row also ships its full facet set so the UI shows badges + can build compound
   # views (saved queries over the axes) without re-deriving.
+  # Plan-primary lenses: the default view groups by the PLANNING axis. Scheduling
+  # is NOT a group — it's a date badge + a sort (scheduled items float to the top
+  # of Committed). "ready"/"unscheduled" retired (ambiguous). Active/blocked are
+  # execution overlays; committed = plan resolved (the actionable pool); draft =
+  # planning still open. Each row still carries all axes for badges/compound views.
   @list_lenses [
     {"active", "Active"},
     {"blocked", "Blocked"},
-    {"scheduled", "Scheduled"},
-    {"unscheduled", "Unscheduled"},
+    {"committed", "Committed"},
     {"draft", "Draft"}
   ]
 
@@ -88,7 +92,7 @@ defmodule Lodestar.Threads do
           scheduled: scheduled,
           active: active,
           blocked: blocked,
-          lens: lens(active, blocked, committed, scheduled)
+          lens: lens(active, blocked, committed)
         }
       end
 
@@ -99,9 +103,9 @@ defmodule Lodestar.Threads do
         items = Map.get(by_lens, key, [])
 
         ordered =
-          if key == "scheduled",
-            # the execute queue: manual order (drag-set `priority`) wins, then do_on,
-            # so the top row is literally "next". Unprioritized sort after by do_on.
+          if key == "committed",
+            # actionable pool: drag-set `priority` first, then SCHEDULED items (have
+            # a do_on) ahead of undated, scheduled by date — so dated work floats up.
             do: Enum.sort_by(items, &{prio_key(&1.priority), &1.do_on == "", &1.do_on}),
             else: Enum.sort_by(items, & &1.id, :desc)
 
@@ -113,12 +117,11 @@ defmodule Lodestar.Threads do
 
   # Default mutually-exclusive lens (urgency order). Axes stay independent on the
   # row; this is only the grouping the default view collapses them to.
-  defp lens(active, blocked, committed, scheduled) do
+  defp lens(active, blocked, committed) do
     cond do
       active -> "active"
       blocked -> "blocked"
-      committed and scheduled -> "scheduled"
-      committed -> "unscheduled"
+      committed -> "committed"
       true -> "draft"
     end
   end
