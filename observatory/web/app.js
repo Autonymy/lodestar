@@ -16,11 +16,22 @@ let tokens = { in: 0, out: 0 };
 const agentsById = {};      // uuid → last presence record (for cross-tab selection)
 
 // ---------- tabs ----------
-document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
-  showTab(t.dataset.view);
-  // defer to next frame: #cy is display:none until showTab paints .active, so a
-  // synchronous ensure() lets cytoscape fit against a 0×0 container → squished nodes.
-  if (t.dataset.view === 'graph') requestAnimationFrame(() => Graph.ensure());
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => showTab(t.dataset.view));
+document.querySelectorAll('.subtab').forEach(b => b.onclick = () => showThreadSubview(b.dataset.subview));
+
+// ---------- content-view switching (new SPA layout) ----------
+document.querySelectorAll('#content-view button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('#content-view button').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    const target = btn.dataset.content;
+    document.querySelectorAll('.content-wrap .view').forEach(v => v.classList.remove('active'));
+    const viewEl = document.getElementById(target + '-view');
+    if (viewEl) viewEl.classList.add('active');
+    if (target === 'graph') requestAnimationFrame(() => Graph.ensure());
+    if (target === 'board' && !boardMounted && window.mountBoard) { mountBoard($('#board-root')); boardMounted = true; }
+    history.replaceState(null, '', '#' + target);
+  };
 });
 
 // ---------- graph-membership facet: toggle source daemons in the one union ----------
@@ -340,24 +351,44 @@ function showDetail(which) {
 }
 document.querySelectorAll('#detail-view button').forEach(b => b.onclick = () => showDetail(b.dataset.detail));
 
-// ---------- unify hook: graph agent-node → live stream (shared selection) ----
-const VIEW_EL = { observatory: 'observatory', board: 'board-view', graph: 'graph-view' };
+// ---------- tab routing: Agents | Threads (board/graph subviews) ----
 let boardMounted = false;
+let threadSubview = 'board';
 function showTab(view) {
+  if (view === 'board' || view === 'graph') { threadSubview = view; view = 'threads'; }
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.view === view));
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  $('#' + (VIEW_EL[view] || 'observatory')).classList.add('active');
-  if (location.hash.slice(1) !== view) history.replaceState(null, '', '#' + view);
-  // wire-in: the Board view is owned by the board module — mount once on first open.
-  if (view === 'board' && window.mountBoard && !boardMounted) { mountBoard($('#board-root')); boardMounted = true; }
+  const subtabs = document.getElementById('thread-subtabs');
+  if (view === 'threads') {
+    if (subtabs) subtabs.style.display = '';
+    showThreadSubview(threadSubview);
+    return;
+  }
+  if (subtabs) subtabs.style.display = 'none';
+  document.getElementById('agents-view').classList.add('active');
+  history.replaceState(null, '', '#agents');
 }
-// deep-link: #graph / #observatory override default; everything else lands on board.
-if (location.hash === '#graph') { showTab('graph'); requestAnimationFrame(() => Graph.ensure()); }
-else if (location.hash === '#observatory') { showTab('observatory'); }
+function showThreadSubview(sub) {
+  threadSubview = sub;
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('.subtab').forEach(x => x.classList.toggle('active', x.dataset.subview === sub));
+  if (sub === 'graph') {
+    document.getElementById('graph-view').classList.add('active');
+    requestAnimationFrame(() => Graph.ensure());
+  } else {
+    document.getElementById('board-view').classList.add('active');
+    if (!boardMounted && window.mountBoard) { mountBoard($('#board-root')); boardMounted = true; }
+  }
+  history.replaceState(null, '', '#' + sub);
+}
+// deep-link: #graph keeps the graph subview; #agents lands on agent list; default is board.
+const _hash = location.hash.slice(1);
+if (_hash === 'graph') { showTab('graph'); }
+else if (_hash === 'agents' || _hash === 'observatory') { showTab('agents'); }
 else { showTab('board'); }
 window.Lodestar = {
   openAgentStream(handle) {
-    showTab('observatory');
+    showTab('agents');
     const a = agentsById[handle] || { uuid: handle, roles: [], has_stream: true };
     selectAgent(a);
     const li = document.querySelector(`#agent-list .agent[data-uuid="${handle}"]`);
