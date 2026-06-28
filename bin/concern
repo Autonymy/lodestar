@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# concern — concern-level coordination for parallel agents (NOT locks).
+# Declare a feature + its footprint; concerns coexist; overlap and likely-to-land
+# work are surfaced so agents shape around each other. See cli/concern-cli.clj.
+exec bb "$HOME/code/lodestar/cli/concern-cli.clj" 7977 "$@"
