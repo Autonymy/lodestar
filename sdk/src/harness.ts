@@ -114,8 +114,10 @@ export interface HarnessOpts {
 // the bin/lodestar-on-spawn SessionStart hook. Presence so it shows on the roster;
 // the concern protocol appended to the system prompt so it self-coordinates.
 function registerPresence(self: string): void {
-  // fire-and-forget — coordination must never delay or break a spawn
-  execFile("bb", [`${REPO}/cli/presence-cli.clj`, "7978", "register", self, process.cwd(), self], () => {});
+  // fire-and-forget — coordination must never delay or break a spawn.
+  // PORT (the canonical :7977 log) — NOT a separate daemon: presence on :7978
+  // stranded, invisible to concern/roster/board which all read :7977.
+  execFile("bb", [`${REPO}/cli/presence-cli.clj`, PORT, "register", self, process.cwd(), self], () => {});
 }
 function withCoordination(self: string, base: string): string {
   const repo = process.cwd().split("/").filter(Boolean).pop() ?? "repo";
