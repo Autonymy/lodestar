@@ -105,21 +105,29 @@
       (put! port re "exclusivity" (or excl "inclusive")) ; single
       (prn {:role re :exclusivity (or excl "inclusive")}))
 
-    "assign"                                ; <uuid> <slug>  — agent takes a role (exclusive => lease-gated)
+    ;; assign/unassign — COEXIST-ELECT, no lease (thread 019f100f-eefe). The exclusive-role
+    ;; @lease:role:<slug> family is DELETED: a role holder is graph-internal, so it collapses
+    ;; onto coexist-elect. `holds` is MULTI, so rival assigns to an exclusive role BOTH land
+    ;; (no block, no refusal); the single true holder is ELECTED at read time (earliest holder
+    ;; wins — `holders` lists them in election order). A loser sees it lost on its next read and
+    ;; yields — dup is cheaper than coordination. (Lease survives only for EXTERNAL resources.)
+    "assign"                                ; <uuid> <slug>  — agent takes a role (coexist-elect)
     (let [[h slug] args, ae (str "@agent:" h), re (str "@role:" slug)
-          excl (resolved port re "exclusivity")]
+          excl (resolved port re "exclusivity")
+          prior (->> (send-op port {:op :query :query {:find "a"
+                       :rules [{:head {:rel "a" :args [{:var "a"}]}
+                                :body [{:rel "triple" :args [{:var "a"} "holds" re]}]}]}})
+                     :ok (mapv first) (remove #(= ae %)) vec)]
+      (append! port ae "holds" re)          ; coexist — both land, no lease
       (if (= excl "exclusive")
-        (let [r (send-op port {:op :acquire-lease :res (str "role:" slug) :holder h :ttl-ms TTL})]
-          (if (:ok r)
-            (do (append! port ae "holds" re) (prn {:assigned re :to h :exclusive true}))
-            (prn {:refused re :reason :exclusive-held :by (:holder r)})))
-        (do (append! port ae "holds" re) (prn {:assigned re :to h :exclusive false}))))
+        (prn {:assigned re :to h :exclusive true :coexist true
+              :prior-holders prior
+              :note "exclusive resolved by coexist-elect (earliest holder wins; see `holders`)"})
+        (prn {:assigned re :to h :exclusive false})))
 
-    "unassign"                              ; <uuid> <slug>
+    "unassign"                              ; <uuid> <slug>  — drop the holds claim (no lease)
     (let [[h slug] args, ae (str "@agent:" h), re (str "@role:" slug)]
       (retract! port ae "holds" re)
-      (when (= "exclusive" (resolved port re "exclusivity"))
-        (send-op port {:op :release-lease :res (str "role:" slug) :holder h}))
       (prn {:unassigned re :from h}))
 
     "roles"                      ; <uuid>  — what this agent holds
