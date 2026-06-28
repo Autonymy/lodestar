@@ -1,7 +1,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { StreamWriter } from "./stream-writer";
 import { harnessOptions, type Effort } from "./harness";
-import { charge, tokensOf } from "./budget";
+import { tokensOf } from "./budget";
 import { recordRun } from "./telemetry";
 
 interface SpawnOptions {
@@ -44,7 +44,8 @@ export async function spawn(opts: SpawnOptions): Promise<string> {
     }
   }
 
-  await charge(tokensOf(resultMsg)); // bill this run's tokens to the shared budget (atomic :bump)
+  // Spend is no longer charged to a counter here; it is summed from the @run
+  // cost_usd claim this run records below (remaining() folds Σ over @run costs).
   recordRun({ thread: "(ad-hoc)", agent: agentId, tokens: tokensOf(resultMsg),
               durationMs: resultMsg?.duration_ms ?? 0, posture: "spawn", outcome: "ran" });
   console.log(`[spawn] @agent:${agentId} complete`);

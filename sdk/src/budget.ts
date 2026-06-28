@@ -1,9 +1,11 @@
-// Token budget — the declarative spend cap (replaces the concurrency cap). Set it
-// once: `lodestar tell @swarm budget_total 500000`. Every agent run charges its
-// token usage to @swarm/budget_spent via the coordinator's ATOMIC :bump op (fram-1,
-// e3e9adf) — read-add-write under the lock, so N executors charging at once never
-// lose an update. Executors stop dispatching once spent >= total. Bounds the real
-// resource (spend) regardless of fan-out. No budget_total set => unbounded (opt-in).
+// Cost budget — the declarative spend cap (replaces the concurrency cap). Set it
+// once: `lodestar tell @swarm budget_total 25` (a USD ceiling). Spend is a DERIVED
+// SUM, never a mutated counter: remaining = budget_total − Σ(@run:* cost_usd),
+// folded live from the immutable per-run `@run:<sid> cost_usd` claims presence-cli
+// already writes (the same aggregate cli/lodestar-reconcile.clj reports). No
+// `budget_spent` cell, no `:bump` op, no cross-file sync — full who-spent-what
+// provenance for free. Executors stop dispatching once the sum crosses the cap.
+// No budget_total set => unbounded (opt-in).
 import { createConnection } from "node:net";
 
 const PORT = Number(process.env.LODESTAR_PORT ?? 7977);
@@ -41,14 +43,38 @@ async function readNum(pred: string): Promise<number | null> {
   }
 }
 
-// Tokens left, or Infinity if no budget is set (the unbounded, opt-in default).
+// Σ(@run:* cost_usd) — the live spend, folded from the immutable per-run cost
+// claims (a Datalog aggregate, no mutable cell). The find returns (run, cost)
+// PAIRS so two runs with an identical cost stay distinct rows — a cost-only find
+// would collapse them under set semantics and under-count. 0 when none recorded.
+async function spentSum(): Promise<number> {
+  try {
+    const q =
+      '{:op :query :query {:find "c" :rules [{:head {:rel "c" :args [{:var "e"} {:var "v"}]}' +
+      ' :body [{:rel "triple" :args [{:var "e"} "cost_usd" {:var "v"}]}]}]}}';
+    const r = await coordOp(q);
+    let sum = 0;
+    for (const m of r.matchAll(/\[\s*"@run:[^"]*"\s+"?(-?[\d.]+)"?\s*\]/g)) {
+      const n = Number(m[1]);
+      if (!Number.isNaN(n)) sum += n;
+    }
+    return sum;
+  } catch {
+    return 0;
+  }
+}
+
+// Budget left, or Infinity if no budget is set (the unbounded, opt-in default).
+// remaining = budget_total − Σ(@run cost_usd).
 export async function remaining(): Promise<number> {
   const total = await readNum("budget_total");
   if (total == null || Number.isNaN(total)) return Infinity;
-  return total - ((await readNum("budget_spent")) ?? 0);
+  return total - (await spentSum());
 }
 
 // Total tokens for one agent run (input + output + cache) from the SDK result msg.
+// Retained: telemetry's recordRun folds this into the @run tuple. Spend itself is
+// no longer charged here — it is summed from the @run cost_usd claims at read time.
 export function tokensOf(resultMsg: any): number {
   const u = resultMsg?.usage ?? {};
   return (
@@ -57,15 +83,4 @@ export function tokensOf(resultMsg: any): number {
     (u.cache_creation_input_tokens ?? 0) +
     (u.cache_read_input_tokens ?? 0)
   );
-}
-
-// Atomically add `tokens` to @swarm/budget_spent via the coordinator :bump op —
-// race-proof under concurrent charges (read-add-write inside the lock). No-op when
-// no budget is set, so unbudgeted runs stay untracked.
-export async function charge(tokens: number): Promise<void> {
-  if (tokens <= 0) return;
-  if ((await readNum("budget_total")) == null) return; // no budget => don't track
-  try {
-    await coordOp(`{:op :bump :te ${JSON.stringify(SUBJECT)} :p "budget_spent" :n ${Math.round(tokens)}}`);
-  } catch {}
 }
