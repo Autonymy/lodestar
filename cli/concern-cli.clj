@@ -49,6 +49,11 @@
 ;; the per-repo CODE daemon port (bin/concern discovers + exports it); nil => path fallback.
 (def code-port (let [p (System/getenv "TERN_CODE_PORT")] (when (and p (seq p)) (->port p))))
 
+;; concern-id args arrive from humans/agents in either form; every claim subject in
+;; the log carries the @ sigil, so a bare id here writes to a PHANTOM bare node —
+;; the split-brain that stranded `reached landed` claims invisibly (2026-07-02).
+(defn norm-cid [c] (if (or (nil? c) (str/starts-with? c "@")) c (str "@" c)))
+
 ;; one-column datalog query: bind ?e in `body`, return the column
 (defn q-col [port body]
   (->> (:ok (send-op port {:op :query
@@ -170,6 +175,9 @@
           ;; fram's export strip the wrong char. Old bare-id concerns are tolerated, not rewritten.
           id (str "@concern-" (System/currentTimeMillis) "-" (subs (str (java.util.UUID/randomUUID)) 0 4))]
       ;; spine on the :7977 board (low-frequency declare/maturity); footprint NEVER lands here.
+      ;; mint the agent's person node first — a driver ref to a node without a
+      ;; display_name is a validate violation the agent can't see from here.
+      (put! port (str "@" agent) "display_name" agent)
       (put! port id "title"  (str "[" repo "] " intent))   ; single
       (put! port id "kind"   "concern")                    ; single
       (put! port id "agent"  (str "@" agent))              ; single
@@ -202,11 +210,11 @@
 
     "overlap"
     (let [[c & flags] args]
-      (overlap! port c (boolean (some #(= % "--landing") flags))))
+      (overlap! port (norm-cid c) (boolean (some #(= % "--landing") flags))))
 
     "shape"                                              ; hidden alias: overlap --landing
     (let [[c] args]
-      (overlap! port c true))
+      (overlap! port (norm-cid c) true))
 
     ;; A concern is LIVE only while its owning agent is ONLINE in the presence roster
     ;; (renewable-lease liveness — coord/online?). A crashed agent's concerns never got
@@ -238,12 +246,14 @@
           (println "       (STALE: owning agent presence lapsed)"))))
 
     "status"
-    (let [[c st] args]
+    (let [[c st] args
+          c (norm-cid c)]
       (append! port c "reached" st)                        ; monotone ladder — append, never set
       (println (str "✓ " c " reached=" st " (status=" (status-of port c) ")")))
 
     "done"
-    (let [[c] args]
+    (let [[c] args
+          c (norm-cid c)]
       (append! port c "reached" "landed")
       (println (str "✓ " c " landed")))
 
