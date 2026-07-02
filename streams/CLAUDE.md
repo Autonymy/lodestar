@@ -20,3 +20,16 @@ edges to every thread the conversation spawned. Chain: utterance → distillatio
 
 Mining (retry loops, verb votes, doc re-reads) is `tern-mine`'s job, not this
 layer's — raw here is its input corpus.
+
+## Cost contract — this layer is nearly free; keep it that way
+
+- **Raw capture = `cp`, zero tokens.** The Claude Code harness already appends
+  the full transcript to `~/.claude/projects/<proj>/<session>.jsonl` in real
+  time, mechanically. Never have a model regenerate conversation text into a
+  file; snapshot the file the harness already wrote.
+- **Distillation = cheap-tier agent** (sonnet-worker / haiku), never the
+  coordinator model. Exception: if the coordinator already holds the whole
+  session in context at session end, its ~1k-token summary is cheaper than a
+  fresh agent re-parsing megabytes of JSONL — allowed, but that's the only case.
+- **Coordinator's only job**: mint the stream thread + `relates_to` edges
+  (a handful of claims).
